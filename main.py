@@ -53,20 +53,6 @@ def is_not_exist(user: User):
         return conn.cursor().execute("select * from User where id=?", (user.id,)).fetchone() is None
 
 
-def add_apikey(user: User, key: str):
-    with db() as conn:
-        if is_key_not_valid(key):
-            return False
-        cursor = conn.cursor()
-        if cursor.execute('select * from Keys where apikey=?;', (key,)).fetchone() is None:
-            cursor.execute(
-                "insert into Keys (uid, apikey) values (?,?);",
-                (user.id, key)
-            )
-        conn.commit()
-        return True
-
-
 def is_key_not_valid(key: str):
     return re.match('^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$', key) is None
 
@@ -81,26 +67,40 @@ def start(message: Message):
 
 @bot.message_handler(commands=['addkey'])
 def addkey(message: Message):
-    key = message.text[7:].strip()
-    if re.match("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", key) is None:
-        bot.send_message(message.chat.id, "Your key is invalid!")
-        return
+    key = message.text[8:].strip()
+    is_valid = re.match("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",key) is not None
     with db() as conn:
         cursor = conn.cursor()
-        if cursor.execute("select * from Keys where apikey=?;", (key,)) is None:
+        if cursor.execute("select * from Keys where apikey=?;", (key,)).fetchone() is None:
             cursor.execute("insert into Keys (uid, apikey) values (?,?);", (message.from_user.id, key))
             conn.commit()
-            msg = "Your Key have been added."
-        else:
-            msg = "Your Key already exist."
-        bot.send_message(message.chat.id, msg)
+            bot.send_message(message.chat.id, "Your key have been added.")
 
 
 @bot.message_handler(commands=['mykey'])
 def my_key(message: Message):
-    keys = "\n".join(
-        ["`" + kid + "` - `" + apikey.replace("-", "\-") + "`" for kid, _, apikey in mykey(message.from_user)])
-    bot.send_message(message.chat.id, f"Your keys are {keys}", 'MarkdownV2')
+    with db() as conn:
+        keys = conn.cursor().execute("select * from Keys where uid=?;", (message.from_user.id,)).fetchall()
+        k = "\n".join(["`"+apikey.replace("-","\-")+"`" for _,_,apikey in keys])
+        bot.send_message(message.chat.id, f'You has {len(keys)} key\(s\)\.\nThey are \n{k}', "MarkdownV2")
+        
+        
+@bot.message_handler(commands=['delkey'])
+def delkey(message: Message):
+    key = message.text[8:].strip()
+    if is_key_not_valid(key):
+        bot.send_message(message.chat.id, "Your key is invalid!")
+        return
+    with db() as conn:
+        cursor = conn.cursor()
+        if cursor.execute("select* from Keys where uid=? and apikey=?;", (message.from_user.id, key)).fetchone() is not None:
+            cursor.execute("delete from Keys where uid=? and apikey=?;", (message.from_user.id, key))
+            msg = "Your key have been deleted."
+        else:
+            msg = "You don't have the key."
+        conn.commit()
+        bot.send_message(message.chat.id, msg)
+        
 
 
 bot.infinity_polling()
