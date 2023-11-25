@@ -9,7 +9,7 @@ bot = telebot.TeleBot(os.environ.get('TOKEN'))
 
 print('Bot is running...')
 
-    
+
 def db():
     with sqlite3.connect("database.db") as conn:
         cursor = conn.cursor()
@@ -23,16 +23,16 @@ def db():
         cursor.execute("""
             create table if not exists Keys
             (
-            id integer primary key autoincrement,
+            kid integer primary key autoincrement,
             uid integer,
             apikey text,
             foreign key (uid) references User(id)
             );"""
-        )
+                       )
         conn.commit()
         return conn
-        
-        
+
+
 def add_user(user: User):
     with db() as conn:
         cursor = conn.cursor()
@@ -41,8 +41,8 @@ def add_user(user: User):
             (user.id, user.username, user.full_name)
         )
         conn.commit()
-        
-        
+
+
 def mykey(user: User):
     with db() as conn:
         return conn.cursor().execute("select * from Keys where uid=?;", (user.id,)).fetchall()
@@ -51,8 +51,8 @@ def mykey(user: User):
 def is_not_exist(user: User):
     with db() as conn:
         return conn.cursor().execute("select * from User where id=?", (user.id,)).fetchone() is None
-        
-        
+
+
 def add_apikey(user: User, key: str):
     with db() as conn:
         if is_key_not_valid(key):
@@ -81,21 +81,25 @@ def start(message: Message):
 
 @bot.message_handler(commands=['addkey'])
 def addkey(message: Message):
-    key = message.text[8:].strip()
-    if is_key_not_valid(key):
-        bot.send_message(message.chat.id, "Your Key is invalid.")
+    key = message.text[7:].strip()
+    if re.match("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$", key) is None:
+        bot.send_message(message.chat.id, "Your key is invalid!")
         return
     with db() as conn:
         cursor = conn.cursor()
         if cursor.execute("select * from Keys where apikey=?;", (key,)) is None:
             cursor.execute("insert into Keys (uid, apikey) values (?,?);", (message.from_user.id, key))
             conn.commit()
-        bot.send_message(message.chat.id, "Your Key have been added.")
+            msg = "Your Key have been added."
+        else:
+            msg = "Your Key already exist."
+        bot.send_message(message.chat.id, msg)
 
 
 @bot.message_handler(commands=['mykey'])
 def my_key(message: Message):
-    keys = "\n".join(["`"+id+"` - `"+apikey.replace("-","\-")+"`" for id,_,apikey in mykey(message.from_user)])
+    keys = "\n".join(
+        ["`" + kid + "` - `" + apikey.replace("-", "\-") + "`" for kid, _, apikey in mykey(message.from_user)])
     bot.send_message(message.chat.id, f"Your keys are {keys}", 'MarkdownV2')
 
 
