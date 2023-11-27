@@ -1,105 +1,115 @@
+import json
 import os
 import re
 import sqlite3
 
+import requests
 import telebot
-from telebot.types import Message, User
+from telebot.types import Message, User, CallbackQuery
+
+import db
+from pixeldrain import post_file, get_file
 
 bot = telebot.TeleBot(os.environ.get('TOKEN'))
 
 print('Bot is running...')
 
 
-def db():
-    with sqlite3.connect("database.db") as conn:
-        cursor = conn.cursor()
-        cursor.execute(f"""
-            create table if not exists User
-            (
-            id integer,
-            username text,
-            full_name text
-            );""")
-        cursor.execute("""
-            create table if not exists Keys
-            (
-            kid integer primary key autoincrement,
-            uid integer,
-            apikey text,
-            foreign key (uid) references User(id)
-            );"""
-                       )
-        conn.commit()
-        return conn
-
-
-def add_user(user: User):
-    with db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "insert into User (id,username,full_name) values (?,?,?);",
-            (user.id, user.username, user.full_name)
-        )
-        conn.commit()
-
-
-def mykey(user: User):
-    with db() as conn:
-        return conn.cursor().execute("select * from Keys where uid=?;", (user.id,)).fetchall()
-
-
-def is_not_exist(user: User):
-    with db() as conn:
-        return conn.cursor().execute("select * from User where id=?", (user.id,)).fetchone() is None
-
-
-def is_key_not_valid(key: str):
-    return re.match('^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$', key) is None
-
-
+# user configuration
 @bot.message_handler(commands=['start'])
 def start(message: Message):
     user = message.from_user
-    if is_not_exist(user):
-        add_user(user)
-    bot.send_message(message.chat.id, f"Hello *{user.full_name}*\.", 'MarkdownV2')
+    db.add(user.id)
+    bot.send_message(message.chat.id, f"Hello *{user.full_name}*\.\nWould you like to add your Pixeldrain API Key\?",
+                     'MarkdownV2',
+                     reply_markup=telebot.util.quick_markup(
+                         {
+                             'Yes': {
+                                 'callback_data': 'btn_yes'
+                             },
+                             'No': {
+                                 'callback_data': 'btn_no'
+                             }
+                         }
+                     ))
 
 
-@bot.message_handler(commands=['addkey'])
-def addkey(message: Message):
-    key = message.text[8:].strip()
-    is_valid = re.match("^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",key) is not None
-    with db() as conn:
-        cursor = conn.cursor()
-        if cursor.execute("select * from Keys where apikey=?;", (key,)).fetchone() is None:
-            cursor.execute("insert into Keys (uid, apikey) values (?,?);", (message.from_user.id, key))
-            conn.commit()
-            bot.send_message(message.chat.id, "Your key have been added.")
-
-
-@bot.message_handler(commands=['mykey'])
-def my_key(message: Message):
-    with db() as conn:
-        keys = conn.cursor().execute("select * from Keys where uid=?;", (message.from_user.id,)).fetchall()
-        k = "\n".join(["`"+apikey.replace("-","\-")+"`" for _,_,apikey in keys])
-        bot.send_message(message.chat.id, f'You has {len(keys)} key\(s\)\.\nThey are \n{k}', "MarkdownV2")
-        
-        
-@bot.message_handler(commands=['delkey'])
-def delkey(message: Message):
-    key = message.text[8:].strip()
-    if is_key_not_valid(key):
-        bot.send_message(message.chat.id, "Your key is invalid!")
+@bot.callback_query_handler(func=lambda call: True)
+def callback(call: CallbackQuery):
+    msg = ''
+    markup = telebot.util.quick_markup(
+        {
+            'OK, I\'ll add later.': {
+                'callback_data': 'btn_later'
+            }
+        }
+    )
+    if call.data == 'btn_yes':
+        bot.register_next_step_handler(call.message, add_user_token)
+        msg = "Now, send your token."
+        markup = None
+    elif call.data == 'btn_no':
+        msg = "Your know what, You can add it later."
+    elif call.data == 'btn_later':
+        bot.delete_message(call.message.chat.id, call.message.id)
         return
-    with db() as conn:
-        cursor = conn.cursor()
-        if cursor.execute("select* from Keys where uid=? and apikey=?;", (message.from_user.id, key)).fetchone() is not None:
-            cursor.execute("delete from Keys where uid=? and apikey=?;", (message.from_user.id, key))
-            msg = "Your key have been deleted."
-        else:
-            msg = "You don't have the key."
-        conn.commit()
-        bot.send_message(message.chat.id, msg)
-        
+    bot.edit_message_text(msg, call.message.chat.id, call.message.id, reply_markup=markup)
+
+
+@bot.message_handler(commands=['addtoken'])
+def add_user_token(message: Message):
+    """
+    Add user's token to database.
+    :param message:
+    :return:
+    """
+    token = message.text.strip()
+    add = '/addtoken'
+    msg = "Your token has been added successfully."
+    if add == token:
+        # if click manual, send token later
+        bot.send_message(message.chat.id, "Now, send your token.")
+        bot.register_next_step_handler(message, add_user_token)
+        return
+    if add in token:
+        # if cmd with token split it and check, add if valid
+        token = token.replace(add, '').strip()
+    if not db.add(message.from_user.id, token):
+        msg = "Your token is invalid!"
+    bot.send_message(message.chat.id, msg)
+
+
+@bot.message_handler(commands=['mytoken'])
+def user_token(message: Message):
+    token = db.get_token(message.from_user.id).replace("-", "\-")
+    msg = f'Your token is `{token}`'
+    if not token:
+        msg = "Your don't have token"
+    bot.send_message(message.chat.id, msg, 'MarkdownV2')
+
+
+@bot.message_handler(commands=['deltoken'])
+def del_user_token(message: Message):
+    db.del_token(message.from_user.id)
+    bot.send_message(message.chat.id, "Your token has been deleted.")
+
+
+# pixeldrain configuration
+@bot.message_handler(content_types=['photo', 'document'])
+def upload_photo(message: Message):
+    if message.photo:
+        token = db.get_token(message.from_user.id)
+        path = bot.get_file(message.photo[-1].file_id).file_path
+        print(path)
+        print(path.replace(re.match("[a-z]+\/", path).group(), ''))
+
+
+@bot.message_handler(commands=['getphoto'])
+def get_photo(message: Message):
+    file_id = message.text[10:].strip()
+    r = get_file(file_id)
+    if r.status_code == 200:
+        bot.send_photo(message.chat.id, r.content)
+
 
 bot.infinity_polling()
